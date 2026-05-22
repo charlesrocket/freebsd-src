@@ -32,6 +32,7 @@
  * $Id: ng_hci_main.c,v 1.2 2003/03/18 00:09:36 max Exp $
  */
 
+#include <strfunc.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -39,6 +40,7 @@
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/queue.h>
+#include <sys/devctl.h>
 #include <netgraph/ng_message.h>
 #include <netgraph/netgraph.h>
 #include <netgraph/ng_parse.h>
@@ -110,6 +112,19 @@ static int ng_hci_linktype_to_addrtype(int linktype)
 	}
 	return BDADDR_BREDR;
 }
+
+/*
+ * Format bdaddr_t as "xx:xx:xx:xx:xx:xx" into buf.
+ */
+
+static void
+ng_hci_bdaddr_to_str(const bdaddr_t *ba, char buf[18])
+{
+	snprintf(buf, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+		ba->b[5], ba->b[4], ba->b[3],
+		ba->b[2], ba->b[1], ba->b[0]);
+} /* ng_hci_bdaddr_to_str */
+
 /*****************************************************************************
  *****************************************************************************
  **                   Netgraph methods implementation
@@ -268,6 +283,20 @@ ng_hci_disconnect(hook_p hook)
 		/* Connection terminated by local host */
 		ng_hci_unit_clean(unit, 0x16);
 		unit->state &= ~(NG_HCI_UNIT_CONNECTED|NG_HCI_UNIT_INITED);
+
+		/* Signal power off to devd */
+		{
+			char	bdstr[18];
+			sbuf 	*sb;
+
+			sb=sbuf_init();
+			ng_hci_bdaddr_to_str(&unit->bdaddr, bdstr);
+			sbuf_sprintf(sb, "node=%s bdaddr=%s\n",
+				NG_NODE_NAME(NG_HOOK_NODE(hook)), bdstr);
+
+			devctl_notify("BLUETOOTH", "HCI", "POWERED_OFF", sb->buf);
+			sbuf_free(sb);
+		}
 	} else
 		return (EINVAL);
 
@@ -366,11 +395,26 @@ ng_hci_default_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				error = ENXIO;
 				break;
 			}
-				
+
 			unit->state |= NG_HCI_UNIT_INITED;
 
 			ng_hci_node_is_up(unit->node, unit->acl, NULL, 0);
 			ng_hci_node_is_up(unit->node, unit->sco, NULL, 0);
+
+			 /* Signal init to devd */
+			{
+				char	bdstr[18];
+				sbuf	*sb;
+
+				sb=sbuf_init();
+				ng_hci_bdaddr_to_str(&unit->bdaddr, bdstr);
+				sbuf_sprintf(sb, "node=%s bdaddr=%s\n",
+					NG_NODE_NAME(node), bdstr);
+
+				devctl_notify("BLUETOOTH", "HCI", "INITIALIZED", sb->buf);
+				sbuf_free(sb);
+			}
+
 			break;
 
 		/* Get node debug level */
